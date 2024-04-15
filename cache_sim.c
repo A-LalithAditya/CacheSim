@@ -21,7 +21,7 @@ struct Cache {
 struct Instruction {
     int type; // 0 for read, 1 for write
     byte addr;
-    byte data; // Only used for write 
+    byte data; // This is Only used for write 
 };
 
 typedef struct Cache Cache;
