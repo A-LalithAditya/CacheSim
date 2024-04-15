@@ -114,8 +114,8 @@ void cpu_loop(int thread_num, int num_threads){
         // Update cache line
         #pragma omp critical
         cache[hash] = *cache_line;
-        
-        #pragma omp barrier // This is to ensure all threads update the cache before proceeding
+        // This is to ensure all threads update the cache before proceeding
+        #pragma omp barrier 
     }
     fclose(inst_file);
     free(cache);
