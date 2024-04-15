@@ -6,116 +6,132 @@
 
 typedef char byte;
 
-struct cache {
-    byte address; // This is the address in memory.
-    byte value; // This is the value stored in cached memory.
-    // State for you to implement MESI protocol.
-    byte state;
+// Defined the required cache states here
+#define INVALID 0
+#define SHARED 1
+#define EXCLUSIVE 2
+#define MODIFIED 3
+
+struct Cache {
+    byte addr; // Address in memory
+    byte data; // Data stored in cache
+    byte state; // State for MESI protocol
 };
 
-struct decoded_inst {
-    int type; // 0 is RD, 1 is WR
-    byte address;
-    byte value; // Only used for WR 
+struct Instruction {
+    int type; // 0 for read, 1 for write
+    byte addr;
+    byte data; // Only used for write 
 };
 
-typedef struct cache cache;
-typedef struct decoded_inst decoded;
-
-
-/*
- * This is a very basic C cache simulator.
- * The input files for each "Core" must be named core_1.txt, core_2.txt, core_3.txt ... core_n.txt
- * Input files consist of the following instructions:
- * - RD <address>
- * - WR <address> <val>
- */
+typedef struct Cache Cache;
+typedef struct Instruction Instruction;
 
 byte * memory;
 
-// Decode instruction lines
-decoded decode_inst_line(char * buffer){
-    decoded inst;
-    char inst_type[2];
+Instruction decode_instruction_line(char * buffer){
+    Instruction inst;
+    char inst_type[3];
     sscanf(buffer, "%s", inst_type);
     if(!strcmp(inst_type, "RD")){
         inst.type = 0;
         int addr = 0;
         sscanf(buffer, "%s %d", inst_type, &addr);
-        inst.value = -1;
-        inst.address = addr;
+        inst.data = -1;
+        inst.addr = addr;
     } else if(!strcmp(inst_type, "WR")){
         inst.type = 1;
         int addr = 0;
         int val = 0;
         sscanf(buffer, "%s %d %d", inst_type, &addr, &val);
-        inst.address = addr;
-        inst.value = val;
+        inst.addr = addr;
+        inst.data = val;
     }
     return inst;
 }
 
-// Helper function to print the cachelines
-void print_cachelines(cache * c, int cache_size){
+void print_cache_lines(Cache * c, int cache_size){
     for(int i = 0; i < cache_size; i++){
-        cache cacheline = *(c+i);
-        printf("Address: %d, State: %d, Value: %d\n", cacheline.address, cacheline.state, cacheline.value);
+        Cache cache_line = *(c+i);
+        printf("Address: %d, State: %d, Data: %d\n", cache_line.addr, cache_line.state, cache_line.data);
     }
 }
 
-
-// This function implements the mock CPU loop that reads and writes data.
-void cpu_loop(int num_threads){
-    // Initialize a CPU level cache that holds about 2 bytes of data.
+void cpu_loop(int thread_num, int num_threads){
     int cache_size = 2;
-    cache * c = (cache *) malloc(sizeof(cache) * cache_size);
+    Cache * cache = (Cache *) malloc(sizeof(Cache) * cache_size);
+    if (cache == NULL) {
+        printf("Memory allocation failed.\n");
+        return;
+    }
     
-    // Read Input file
-    FILE * inst_file = fopen("input_0.txt", "r");
+    // Initializing the cache here
+    for (int i = 0; i < cache_size; i++) {
+        cache[i].addr = -1;
+        cache[i].state = INVALID;
+    }
+    
+    char filename[20];
+    sprintf(filename, "input_%d.txt", thread_num);
+    FILE * inst_file = fopen(filename, "r");
+    if (inst_file == NULL) {
+        printf("Failed to open file: %s\n", filename);
+        free(cache);
+        return;
+    }
+    
     char inst_line[20];
-    // Decode instructions and execute them.
     while (fgets(inst_line, sizeof(inst_line), inst_file)){
-        decoded inst = decode_inst_line(inst_line);
-        /*
-         * Cache Replacement Algorithm
-         */
-        int hash = inst.address%cache_size;
-        cache cacheline = *(c+hash);
-        /*
-         * This is where you will implement the coherancy check.
-         * For now, we will simply grab the latest data from memory.
-         */
-        if(cacheline.address != inst.address){
-            // Flush current cacheline to memory
-            *(memory + cacheline.address) = cacheline.value;
-            // Assign new cacheline
-            cacheline.address = inst.address;
-            cacheline.state = -1;
-            // This is where it reads value of the address from memory
-            cacheline.value = *(memory + inst.address);
-            if(inst.type == 1){
-                cacheline.value = inst.value;
+        Instruction inst = decode_instruction_line(inst_line);
+        
+        int hash = inst.addr % cache_size;
+        Cache * cache_line = &cache[hash];
+        
+        // Used omp critical to make sure cache update is atomic
+        #pragma omp critical
+        if(cache_line->addr != inst.addr){
+            if (cache_line->state == MODIFIED) {
+                *(memory + cache_line->addr) = cache_line->data;
             }
-            *(c+hash) = cacheline;
+            cache_line->addr = inst.addr;
+            cache_line->data = *(memory + inst.addr);
+            cache_line->state = SHARED; 
         }
+        
+        // Cache hit
         switch(inst.type){
-            case 0:
-                printf("Reading from address %d: %d\n", cacheline.address, cacheline.value);
+            case 0: // Read
+                printf("Thread %d: RD %d: %d\n", thread_num, cache_line->addr, cache_line->data);
                 break;
             
-            case 1:
-                printf("Writing to address %d: %d\n", cacheline.address, cacheline.value);
+            case 1: // Write
+                cache_line->data = inst.data;
+                cache_line->state = MODIFIED; 
+                printf("Thread %d: WR %d: %d\n", thread_num, cache_line->addr, cache_line->data);
                 break;
         }
+        
+        // Update cache line
+        #pragma omp critical
+        cache[hash] = *cache_line;
+        
+        #pragma omp barrier // This is to ensure all threads update the cache before proceeding
     }
-    free(c);
+    fclose(inst_file);
+    free(cache);
 }
 
-int main(int c, char * argv[]){
-    // Initialize Global memory
-    // Let's assume the memory module holds about 24 bytes of data.
-    int memory_size = 24;
-    memory = (byte *) malloc(sizeof(byte) * memory_size);
-    cpu_loop(1);
+int main(int argc, char * argv[]){
+    int mem_size = 24;
+    memory = (byte *) malloc(sizeof(byte) * mem_size);
+    int num_threads = 2; // The Number of input files is given here
+    
+    #pragma omp parallel num_threads(num_threads)
+    {
+        int thread_num = omp_get_thread_num();
+        cpu_loop(thread_num, num_threads);
+    }
+    
     free(memory);
+    return 0;
 }
